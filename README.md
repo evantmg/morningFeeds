@@ -27,4 +27,4 @@ python -m pip install -r requirements.txt
 python cybersec_digest.py
 ```
 
-The Gemini key is optional at runtime: without it, the email includes ranked source excerpts but not AI-generated highlights or social drafts. Gmail sender and App Password are required to send any email. Feed and AI failures are logged; AI failures fall back to source excerpts. Review AI-generated facts and social copy against each linked source before posting.
+The Gemini key is optional at runtime: without it, the email includes ranked source excerpts and template LinkedIn/Meta drafts. When Gemini omits a social draft for an individual story, the agent fills it with a source-based template. Gmail sender and App Password are required to send any email. Feed and AI failures are logged; AI failures fall back to source excerpts. Review generated summaries and social copy against each linked source before posting.

@@ -175,6 +175,36 @@ def format_social_post(post, url):
     return post
 
 
+def fallback_social_post(platform, title, summary, highlights, why_it_matters, url):
+    summary = str(summary or title).strip()
+    if len(summary) > 420:
+        summary = summary[:417].rsplit(" ", 1)[0] + "..."
+    takeaway = next((str(point).strip() for point in highlights if str(point).strip()), why_it_matters)
+    takeaway = takeaway[:220]
+
+    if platform == "meta":
+        post = (
+            f"🚨 Cybersecurity update worth a closer look: {title}\n\n"
+            f"{summary}\n\n"
+            f"Key takeaway: {takeaway}\n\n"
+            f"Why it matters: {why_it_matters} Check the original report for affected products and "
+            "evidence before changing controls or sharing the claim. Context beats panic every time.\n\n"
+            "#CyberSecurity #InfoSec #CyberNews"
+        )
+    else:
+        post = (
+            f"🔎 Security briefing: {title}\n\n"
+            f"{summary}\n\n"
+            f"Key takeaway: {takeaway}\n\n"
+            f"Why it matters: {why_it_matters}\n\n"
+            "Security teams should check whether this report applies to their environment and review "
+            "the source for evidence, affected products, and recommended actions. The headline is a "
+            "signal to investigate, not a substitute for the original advisory.\n\n"
+            "#CyberSecurity #InfoSec"
+        )
+    return format_social_post(post, url)
+
+
 def summarize_stories(stories):
     if not stories or not os.getenv("GEMINI_API_KEY"):
         return fallback_digest(stories)
@@ -220,7 +250,14 @@ def summarize_stories(stories):
             if not isinstance(item, dict) or item.get("url") not in by_url:
                 continue
             original = by_url[item["url"]]
-            highlights = item.get("highlights", [])
+            raw_highlights = item.get("highlights", [])
+            summary = str(item.get("summary") or original.excerpt or original.title)
+            highlights = [str(point) for point in raw_highlights if str(point).strip()][:4]
+            if not isinstance(raw_highlights, list):
+                highlights = []
+            why_it_matters = str(item.get("why_it_matters") or "Review the source for affected products and recommended actions.")
+            linkedin_post = format_social_post(item.get("linkedin_post"), original.url)
+            meta_post = format_social_post(item.get("meta_post"), original.url)
             selected.append({
                 "url": original.url,
                 "title": original.title,
@@ -228,12 +265,15 @@ def summarize_stories(stories):
                 "published": original.published,
                 "category": str(item.get("category") or ", ".join(original.topics) or "Cybersecurity"),
                 "severity": str(item.get("severity") or "Informational"),
-                "summary": str(item.get("summary") or original.excerpt or original.title),
-                "highlights": [str(point) for point in highlights if str(point).strip()][:4]
-                if isinstance(highlights, list) else [],
-                "why_it_matters": str(item.get("why_it_matters") or "See the source for full details."),
-                "linkedin_post": format_social_post(item.get("linkedin_post"), original.url),
-                "meta_post": format_social_post(item.get("meta_post"), original.url),
+                "summary": summary,
+                "highlights": highlights,
+                "why_it_matters": why_it_matters,
+                "linkedin_post": linkedin_post or fallback_social_post(
+                    "linkedin", original.title, summary, highlights, why_it_matters, original.url
+                ),
+                "meta_post": meta_post or fallback_social_post(
+                    "meta", original.title, summary, highlights, why_it_matters, original.url
+                ),
             })
             if len(selected) == 8:
                 break
@@ -247,24 +287,31 @@ def summarize_stories(stories):
 
 
 def fallback_digest(stories):
-    return {
-        "topline": "Here are the most relevant cybersecurity updates found in the last 48 hours.",
-        "stories": [
-            {
+    digest_stories = []
+    for story in stories[:8]:
+        summary = story.excerpt or story.title
+        highlights = [story.excerpt] if story.excerpt else []
+        why_it_matters = "Review the original report for affected products and recommended actions."
+        digest_stories.append({
                 "url": story.url,
                 "title": story.title,
                 "source": story.source,
                 "published": story.published,
-                "summary": story.excerpt or story.title,
-                "highlights": [story.excerpt] if story.excerpt else [],
-                "why_it_matters": "Review the original report for affected products and recommended actions.",
+                "summary": summary,
+                "highlights": highlights,
+                "why_it_matters": why_it_matters,
                 "category": ", ".join(story.topics) or "Cybersecurity",
                 "severity": "Informational",
-                "linkedin_post": "",
-                "meta_post": "",
-            }
-            for story in stories[:10]
-        ],
+                "linkedin_post": fallback_social_post(
+                    "linkedin", story.title, summary, highlights, why_it_matters, story.url
+                ),
+                "meta_post": fallback_social_post(
+                    "meta", story.title, summary, highlights, why_it_matters, story.url
+                ),
+            })
+    return {
+        "topline": "Here are the most relevant cybersecurity updates found in the last 48 hours.",
+        "stories": digest_stories,
     }
 
 
