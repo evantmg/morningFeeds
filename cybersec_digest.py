@@ -180,19 +180,25 @@ def fallback_social_post(platform, title, summary, highlights, why_it_matters, u
     takeaway = next((str(point).strip() for point in highlights if str(point).strip()), why_it_matters)
     if len(takeaway) > 180:
         takeaway = takeaway[:177].rsplit(" ", 1)[0] + "..."
-    summary = summary or title
+    if len(summary) > 300:
+        summary = summary[:297].rsplit(" ", 1)[0] + "..."
+    context = str(why_it_matters or "").strip()
+    if len(context) > 160:
+        context = context[:157].rsplit(" ", 1)[0] + "..."
 
     if platform == "meta":
         post = (
             f"🚨 {title}\n\n"
             f"{takeaway}\n\n"
+            f"{context}\n\n"
             "#CyberSecurity #InfoSec #CyberNews"
         )
     else:
         post = (
             f"🔎 {title}\n\n"
-            f"{summary}\n\n"
+            f"{summary or title}\n\n"
             f"Key takeaway: {takeaway}\n\n"
+            f"{context}\n\n"
             "#CyberSecurity #InfoSec"
         )
     return format_social_post(post, url)
@@ -222,9 +228,9 @@ def summarize_stories(stories):
                     "points), one-sentence 'why_it_matters', 'category', supported severity "
                     "('Critical', 'High', 'Medium', or 'Informational'), 'linkedin_post', and "
                     "'meta_post'. Keep source titles and URLs unchanged. Write each LinkedIn post "
-                    "as polished professional copy, around 35-55 words, with a useful hook and "
+                    "as polished professional copy, around 45-60 words, with a useful hook and "
                     "context. Write each Meta post as punchy, energetic, lightly witty copy, around "
-                    "30-50 words; never joke about victims or exaggerate risk. Keep each post concise "
+                    "40-55 words; never joke about victims or exaggerate risk. Keep each post concise "
                     "and avoid repeating the same point. Format both posts in 1-3 short paragraphs "
                     "with a blank line between paragraphs; put each sentence "
                     "on a readable line where natural. Use 1-3 relevant emojis sparingly, not as "
