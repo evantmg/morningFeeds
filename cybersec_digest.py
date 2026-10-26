@@ -177,29 +177,22 @@ def format_social_post(post, url):
 
 def fallback_social_post(platform, title, summary, highlights, why_it_matters, url):
     summary = str(summary or title).strip()
-    if len(summary) > 420:
-        summary = summary[:417].rsplit(" ", 1)[0] + "..."
     takeaway = next((str(point).strip() for point in highlights if str(point).strip()), why_it_matters)
-    takeaway = takeaway[:220]
+    if len(takeaway) > 180:
+        takeaway = takeaway[:177].rsplit(" ", 1)[0] + "..."
+    summary = summary or title
 
     if platform == "meta":
         post = (
-            f"🚨 Cybersecurity update worth a closer look: {title}\n\n"
-            f"{summary}\n\n"
-            f"Key takeaway: {takeaway}\n\n"
-            f"Why it matters: {why_it_matters} Check the original report for affected products and "
-            "evidence before changing controls or sharing the claim. Context beats panic every time.\n\n"
+            f"🚨 {title}\n\n"
+            f"{takeaway}\n\n"
             "#CyberSecurity #InfoSec #CyberNews"
         )
     else:
         post = (
-            f"🔎 Security briefing: {title}\n\n"
+            f"🔎 {title}\n\n"
             f"{summary}\n\n"
             f"Key takeaway: {takeaway}\n\n"
-            f"Why it matters: {why_it_matters}\n\n"
-            "Security teams should check whether this report applies to their environment and review "
-            "the source for evidence, affected products, and recommended actions. The headline is a "
-            "signal to investigate, not a substitute for the original advisory.\n\n"
             "#CyberSecurity #InfoSec"
         )
     return format_social_post(post, url)
@@ -229,10 +222,11 @@ def summarize_stories(stories):
                     "points), one-sentence 'why_it_matters', 'category', supported severity "
                     "('Critical', 'High', 'Medium', or 'Informational'), 'linkedin_post', and "
                     "'meta_post'. Keep source titles and URLs unchanged. Write each LinkedIn post "
-                    "as polished professional copy, around 60-100 words, with a useful hook and "
+                    "as polished professional copy, around 35-55 words, with a useful hook and "
                     "context. Write each Meta post as punchy, energetic, lightly witty copy, around "
-                    "70-100 words; never joke about victims or exaggerate risk. Format both posts "
-                    "in 2-4 short paragraphs with a blank line between paragraphs; put each sentence "
+                    "30-50 words; never joke about victims or exaggerate risk. Keep each post concise "
+                    "and avoid repeating the same point. Format both posts in 1-3 short paragraphs "
+                    "with a blank line between paragraphs; put each sentence "
                     "on a readable line where natural. Use 1-3 relevant emojis sparingly, not as "
                     "decoration on every line. Include no more than 5 relevant hashtags, grouped "
                     "together on a line before the standalone source URL on the final line. Both "

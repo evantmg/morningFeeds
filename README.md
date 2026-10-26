@@ -1,6 +1,6 @@
 # Cybersecurity Daily Briefing
 
-A scheduled news agent that gathers recent reporting across cybersecurity, cloud, AI security, data protection and privacy, identity, applications, software supply chains, networks, and critical infrastructure. Gemini prioritizes stories and prepares summaries, key points, source links, and separate professional LinkedIn and punchy, lightly witty Meta drafts for each selected update.
+A scheduled news agent that gathers recent reporting across cybersecurity, cloud, AI security, data protection and privacy, identity, applications, software supply chains, networks, and critical infrastructure. Gemini prioritizes stories and prepares summaries, key points, source links, and concise professional LinkedIn and punchy, lightly witty Meta drafts for each selected update.
 
 ## What it monitors
 
