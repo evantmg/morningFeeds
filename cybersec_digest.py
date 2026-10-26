@@ -156,6 +156,21 @@ def html_to_text(value):
     return " ".join(parser.parts)
 
 
+def complete_sentence_text(value, max_length=None):
+    text = " ".join(str(value or "").split()).strip()
+    ellipsis = re.search(r"\.{3,}|…", text)
+    if ellipsis:
+        text = text[:ellipsis.start()].rstrip(" ,;:-")
+
+    if max_length and len(text) > max_length:
+        text = text[:max_length]
+
+    endings = list(re.finditer(r"[.!?](?=\s|$)", text))
+    if not endings:
+        return ""
+    return text[:endings[-1].end()].strip()
+
+
 def format_social_post(post, url):
     post = str(post or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     post = re.sub(r"[ \t]*\n[ \t]*", "\n", post)
@@ -176,31 +191,30 @@ def format_social_post(post, url):
 
 
 def fallback_social_post(platform, title, summary, highlights, why_it_matters, url):
-    summary = str(summary or title).strip()
+    summary = complete_sentence_text(summary, 300)
     takeaway = next((str(point).strip() for point in highlights if str(point).strip()), why_it_matters)
-    if len(takeaway) > 180:
-        takeaway = takeaway[:177].rsplit(" ", 1)[0] + "..."
-    if len(summary) > 300:
-        summary = summary[:297].rsplit(" ", 1)[0] + "..."
+    takeaway = complete_sentence_text(takeaway, 180) or str(why_it_matters or "").strip()
     context = str(why_it_matters or "").strip()
     if len(context) > 160:
-        context = context[:157].rsplit(" ", 1)[0] + "..."
+        context = complete_sentence_text(context, 160)
 
     if platform == "meta":
-        post = (
-            f"🚨 {title}\n\n"
-            f"{takeaway}\n\n"
-            f"{context}\n\n"
-            "#CyberSecurity #InfoSec #CyberNews"
-        )
+        parts = [f"🚨 {title}"]
+        if takeaway:
+            parts.append(takeaway)
+        if context and context != takeaway:
+            parts.append(context)
+        parts.append("#CyberSecurity #InfoSec #CyberNews")
     else:
-        post = (
-            f"🔎 {title}\n\n"
-            f"{summary or title}\n\n"
-            f"Key takeaway: {takeaway}\n\n"
-            f"{context}\n\n"
-            "#CyberSecurity #InfoSec"
-        )
+        parts = [f"🔎 {title}"]
+        if summary:
+            parts.append(summary)
+        if takeaway and takeaway not in (summary, context):
+            parts.append(f"Key takeaway: {takeaway}")
+        if context and context != summary:
+            parts.append(context)
+        parts.append("#CyberSecurity #InfoSec")
+    post = "\n\n".join(parts)
     return format_social_post(post, url)
 
 
@@ -289,15 +303,15 @@ def summarize_stories(stories):
 def fallback_digest(stories):
     digest_stories = []
     for story in stories[:8]:
-        summary = story.excerpt or story.title
-        highlights = [story.excerpt] if story.excerpt else []
+        summary = complete_sentence_text(story.excerpt, 900)
+        highlights = [summary] if summary else []
         why_it_matters = "Review the original report for affected products and recommended actions."
         digest_stories.append({
                 "url": story.url,
                 "title": story.title,
                 "source": story.source,
                 "published": story.published,
-                "summary": summary,
+                "summary": summary or story.title,
                 "highlights": highlights,
                 "why_it_matters": why_it_matters,
                 "category": ", ".join(story.topics) or "Cybersecurity",
