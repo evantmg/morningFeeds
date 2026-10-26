@@ -14,9 +14,9 @@ CISA advisories, The Hacker News, BleepingComputer, Krebs on Security, Microsoft
    - `GMAIL_APP_PASSWORD`: a Google App Password for that account. Use an App Password, not your normal Gmail password; Google account 2-Step Verification must be enabled.
    - `GEMINI_API_KEY`: a Gemini API key for AI story selection and summarization.
 3. Optionally add the `GEMINI_MODEL` repository variable to choose a different Gemini model; it defaults to `gemini-3.8-flash`.
-4. Ensure GitHub Actions are enabled. The workflow sends the email daily at **08:00 UTC**. Run it once from **Actions → Daily cybersecurity briefing → Run workflow** to test delivery.
+4. Ensure GitHub Actions are enabled. The workflow is scheduled to send the email daily at **06:00 Nepal Time (00:15 UTC)**. Run it once from **Actions → Daily cybersecurity briefing → Run workflow** to test delivery.
 
-The repository must be on GitHub for its scheduled workflow to run. GitHub schedule times are UTC and may be delayed during high-load periods. The first manual run will also confirm the secrets and Gmail account are configured correctly.
+The repository must be on GitHub for its scheduled workflow to run. GitHub schedule times are UTC and may be delayed during high-load periods, so delivery may be later than 06:00. The first manual run will also confirm the secrets and Gmail account are configured correctly.
 
 ## Run locally
 
