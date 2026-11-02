@@ -1,3 +1,5 @@
 .env
 __pycache__/
 *.py[cod]
+digest_history.json
+digest_history.json.tmp

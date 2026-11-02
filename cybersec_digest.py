@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from email.utils import format_datetime
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import feedparser
 from google import genai
@@ -17,6 +17,24 @@ from google.genai import types
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+HISTORY_FILE = "digest_history.json"
+HISTORY_RETENTION = timedelta(days=30)
+TITLE_STOP_WORDS = {
+    "a", "an", "and", "are", "as", "at", "by", "for", "from", "in", "into",
+    "is", "of", "on", "or", "the", "to", "with", "after", "more", "new",
+    "two", "patch", "patches", "patched", "exploit", "exploits", "exploited",
+    "attack", "attacks", "chain", "chained", "zero", "day", "days",
+}
+GENERIC_EDITORIAL_PATTERNS = (
+    re.compile(
+        r"\b(?:review|consult|check|see)\s+(?:the\s+)?(?:original\s+)?"
+        r"(?:report|source)\s+(?:for\s+)?(?:affected products and\s+)?"
+        r"(?:recommended actions|affected products|details|more information)"
+        r"[^.!?\n]*[.!?]?",
+        re.IGNORECASE,
+    ),
+)
 
 FEEDS = {
     "CISA Advisories": "https://www.cisa.gov/cybersecurity-advisories/all.xml",
@@ -102,6 +120,7 @@ def collect_stories(now=None):
     cutoff = now - timedelta(hours=48)
     stories = []
     seen_urls = set()
+    seen_titles = set()
 
     for source, feed_url in FEEDS.items():
         try:
@@ -112,14 +131,21 @@ def collect_stories(now=None):
             for entry in feed.entries:
                 url = entry.get("link", "").strip()
                 title = entry.get("title", "").strip()
-                if not title or not url or url in seen_urls:
+                normalized_title = normalize_story_title(title)
+                canonical_url = canonical_story_url(url) if url else ""
+                if (
+                    not title or not url or canonical_url in seen_urls
+                    or normalized_title in seen_titles
+                ):
                     continue
                 date_struct = entry.get("published_parsed") or entry.get("updated_parsed")
                 published = datetime(*date_struct[:6], tzinfo=timezone.utc) if date_struct else now
                 if published < cutoff or published > now + timedelta(hours=2):
                     continue
                 excerpt = entry.get("summary", entry.get("description", ""))
-                excerpt = " ".join(html.unescape(html_to_text(excerpt)).split())[:900]
+                excerpt = html.unescape(html_to_text(excerpt))
+                excerpt = strip_feed_boilerplate(excerpt)
+                excerpt = " ".join(excerpt.split())[:900]
                 text = f"{title} {excerpt}".lower()
                 topics = [
                     topic for topic, terms in TOPIC_TERMS.items()
@@ -132,12 +158,13 @@ def collect_stories(now=None):
                 score += 2 if source == "CISA Advisories" else 0
                 score += len(topics)
                 stories.append(Story(title, url, source, published.isoformat(), excerpt, score, topics))
-                seen_urls.add(url)
+                seen_urls.add(canonical_url)
+                seen_titles.add(normalized_title)
         except Exception:
             logging.exception("Feed fetch failed for %s", source)
 
     stories.sort(key=lambda story: (story.score, story.published), reverse=True)
-    return stories[:30]
+    return deduplicate_stories(stories)[:30]
 
 
 def html_to_text(value):
@@ -171,6 +198,160 @@ def complete_sentence_text(value, max_length=None):
     return text[:endings[-1].end()].strip()
 
 
+def canonical_story_url(url):
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower()
+    if hostname.startswith("www."):
+        hostname = hostname[4:]
+    netloc = hostname
+    if parsed.port:
+        netloc = f"{netloc}:{parsed.port}"
+    query = urlencode([
+        (key, value) for key, value in parse_qsl(parsed.query)
+        if not key.lower().startswith("utm_")
+        and key.lower() not in ("ref", "source", "fbclid", "gclid")
+    ])
+    return urlunparse((
+        parsed.scheme.lower(), netloc, parsed.path.rstrip("/"), "", query, ""
+    ))
+
+
+def normalize_story_title(title):
+    return " ".join(re.sub(r"[^\w]+", " ", title.casefold()).split())
+
+
+def clean_editorial_text(value):
+    text = str(value or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = "\n".join(" ".join(line.split()) for line in text.splitlines()).strip()
+    text = re.sub(
+        r"\s*(?:the\s+)?post\b.*?\bappeared first on\b.*$",
+        "",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    for pattern in GENERIC_EDITORIAL_PATTERNS:
+        text = pattern.sub("", text)
+    text = re.sub(r"[ \t]+([,.!?])", r"\1", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def strip_feed_boilerplate(value):
+    return clean_editorial_text(value)
+
+
+def story_title_tokens(title):
+    tokens = set(normalize_story_title(title).split())
+    return {
+        {"chained": "chain", "attacks": "attack", "patches": "patch"}.get(token, token)
+        for token in tokens
+        if token not in TITLE_STOP_WORDS and len(token) > 2
+    }
+
+
+def story_cves(value):
+    return {
+        cve.upper() for cve in re.findall(r"\bCVE-\d{4}-\d{4,}\b", value, re.IGNORECASE)
+    }
+
+
+def are_duplicate_stories(first, second):
+    first_title = first.title if isinstance(first, Story) else first.get("title", "")
+    second_title = second.title if isinstance(second, Story) else second.get("title", "")
+    first_text = (
+        f"{first_title} {first.excerpt}" if isinstance(first, Story)
+        else f"{first_title} {first.get('summary', '')}"
+    )
+    second_text = (
+        f"{second_title} {second.excerpt}" if isinstance(second, Story)
+        else f"{second_title} {second.get('summary', '')}"
+    )
+    first_cves = story_cves(first_text)
+    second_cves = story_cves(second_text)
+    if first_cves.intersection(second_cves):
+        return True
+
+    first_tokens = story_title_tokens(first_title)
+    second_tokens = story_title_tokens(second_title)
+    shared = first_tokens.intersection(second_tokens)
+    union = first_tokens.union(second_tokens)
+    return len(shared) >= 3 and bool(union) and len(shared) / len(union) >= 0.7
+
+
+def deduplicate_stories(stories):
+    unique = []
+    for story in stories:
+        if not any(are_duplicate_stories(story, existing) for existing in unique):
+            unique.append(story)
+    return unique
+
+
+def load_story_history(path=HISTORY_FILE, now=None):
+    now = now or datetime.now(timezone.utc)
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8") as history_file:
+            data = json.load(history_file)
+    except (OSError, json.JSONDecodeError):
+        logging.exception("Could not read sent-story history at %s", path)
+        return []
+
+    if not isinstance(data, dict) or not isinstance(data.get("stories"), list):
+        logging.warning("Sent-story history at %s has an invalid format", path)
+        return []
+    cutoff = now - HISTORY_RETENTION
+    history = []
+    for item in data["stories"]:
+        if not isinstance(item, dict):
+            continue
+        sent_at = item.get("sent_at")
+        if not isinstance(item.get("url"), str) or not isinstance(item.get("title"), str):
+            continue
+        try:
+            sent_at = datetime.fromisoformat(sent_at)
+            if sent_at.tzinfo is None:
+                sent_at = sent_at.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        if sent_at >= cutoff:
+            history.append(item)
+    return history
+
+
+def filter_previously_sent(stories, history):
+    seen_urls = {canonical_story_url(item["url"]) for item in history}
+    fresh = []
+    for story in stories:
+        if canonical_story_url(story.url) in seen_urls or any(
+            are_duplicate_stories(story, item) for item in history
+        ):
+            continue
+        fresh.append(story)
+    return fresh
+
+
+def save_story_history(stories, history, path=HISTORY_FILE, now=None):
+    now = now or datetime.now(timezone.utc)
+    sent_at = now.isoformat()
+    updated = list(history)
+    for story in stories:
+        updated.append({
+            "url": story["url"],
+            "title": story["title"],
+            "summary": story.get("summary", ""),
+            "sent_at": sent_at,
+        })
+    cutoff = now - HISTORY_RETENTION
+    updated = [
+        item for item in updated
+        if datetime.fromisoformat(item["sent_at"]) >= cutoff
+    ]
+    temporary_path = f"{path}.tmp"
+    with open(temporary_path, "w", encoding="utf-8") as history_file:
+        json.dump({"stories": updated}, history_file, ensure_ascii=False, indent=2)
+    os.replace(temporary_path, path)
+
+
 def format_social_post(post, url):
     post = str(post or "").replace("\r\n", "\n").replace("\r", "\n").strip()
     post = re.sub(r"[ \t]*\n[ \t]*", "\n", post)
@@ -192,15 +373,22 @@ def format_social_post(post, url):
 
 def fallback_social_post(platform, title, summary, highlights, why_it_matters, url):
     summary = complete_sentence_text(summary, 300)
-    takeaway = next((str(point).strip() for point in highlights if str(point).strip()), why_it_matters)
-    takeaway = complete_sentence_text(takeaway, 180) or str(why_it_matters or "").strip()
+    takeaway = next(
+        (str(point).strip() for point in highlights if str(point).strip()),
+        summary or why_it_matters,
+    )
+    takeaway = (
+        complete_sentence_text(takeaway, 180)
+        or complete_sentence_text(takeaway)
+        or complete_sentence_text(summary)
+    )
     context = str(why_it_matters or "").strip()
     if len(context) > 160:
         context = complete_sentence_text(context, 160)
 
     if platform == "meta":
         parts = [f"🚨 {title}"]
-        if takeaway:
+        if takeaway and takeaway != summary:
             parts.append(takeaway)
         if context and context != takeaway:
             parts.append(context)
@@ -209,7 +397,7 @@ def fallback_social_post(platform, title, summary, highlights, why_it_matters, u
         parts = [f"🔎 {title}"]
         if summary:
             parts.append(summary)
-        if takeaway and takeaway not in (summary, context):
+        if takeaway and takeaway not in (summary, context) and takeaway not in summary:
             parts.append(f"Key takeaway: {takeaway}")
         if context and context != summary:
             parts.append(context)
@@ -219,14 +407,18 @@ def fallback_social_post(platform, title, summary, highlights, why_it_matters, u
 
 
 def summarize_stories(stories):
-    if not stories or not os.getenv("GEMINI_API_KEY"):
+    if not stories:
+        return fallback_digest(stories)
+    if not os.getenv("GEMINI_API_KEY"):
+        logging.warning("GEMINI_API_KEY is not configured; using source excerpts")
         return fallback_digest(stories)
 
     payload = [asdict(story) for story in stories]
+    model = os.getenv("GEMINI_MODEL") or "gemini-3.8-flash"
     try:
         client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
         response = client.models.generate_content(
-            model=os.getenv("GEMINI_MODEL") or "gemini-3.8-flash",
+            model=model,
             contents=json.dumps(payload),
             config=types.GenerateContentConfig(
                 system_instruction=(
@@ -239,7 +431,9 @@ def summarize_stories(stories):
                     "facts, impacts, quotes, or remediation advice. Return one JSON object with a "
                     "brief 'topline' and a 'stories' array. For each story include the exact input "
                     "'url', factual 'summary' (2-3 sentences), 'highlights' (2-4 short factual "
-                    "points), one-sentence 'why_it_matters', 'category', supported severity "
+                    "points), a source-specific one-sentence 'why_it_matters' when supported "
+                    "(otherwise an empty string; never use generic review-the-source wording), "
+                    "'category', supported severity "
                     "('Critical', 'High', 'Medium', or 'Informational'), 'linkedin_post', and "
                     "'meta_post'. Keep source titles and URLs unchanged. Write each LinkedIn post "
                     "as polished professional copy, around 45-60 words, with a useful hook and "
@@ -258,20 +452,46 @@ def summarize_stories(stories):
             ),
         )
         result = json.loads(response.text)
+        if not isinstance(result, dict) or not isinstance(result.get("stories"), list):
+            raise ValueError("Gemini returned JSON without a stories array")
         by_url = {story.url: story for story in stories}
         selected = []
+        selected_sources = []
         for item in result.get("stories", []):
             if not isinstance(item, dict) or item.get("url") not in by_url:
                 continue
             original = by_url[item["url"]]
+            if any(are_duplicate_stories(original, prior) for prior in selected_sources):
+                continue
             raw_highlights = item.get("highlights", [])
-            summary = str(item.get("summary") or original.excerpt or original.title)
-            highlights = [str(point) for point in raw_highlights if str(point).strip()][:4]
-            if not isinstance(raw_highlights, list):
-                highlights = []
-            why_it_matters = str(item.get("why_it_matters") or "Review the source for affected products and recommended actions.")
-            linkedin_post = format_social_post(item.get("linkedin_post"), original.url)
-            meta_post = format_social_post(item.get("meta_post"), original.url)
+            summary = clean_editorial_text(
+                item.get("summary") or original.excerpt or original.title
+            )
+            highlights = (
+                [
+                    clean_editorial_text(point)
+                    for point in raw_highlights
+                    if clean_editorial_text(point)
+                ][:4]
+                if isinstance(raw_highlights, list) else []
+            )
+            normalized_summary = " ".join(summary.casefold().split())
+            highlights = [
+                point for point in highlights
+                if " ".join(point.casefold().split()) != normalized_summary
+            ]
+            why_it_matters = clean_editorial_text(item.get("why_it_matters"))
+            if (
+                "review the original report" in why_it_matters.casefold()
+                and "recommended actions" in why_it_matters.casefold()
+            ):
+                why_it_matters = ""
+            linkedin_post = format_social_post(
+                clean_editorial_text(item.get("linkedin_post")), original.url
+            )
+            meta_post = format_social_post(
+                clean_editorial_text(item.get("meta_post")), original.url
+            )
             selected.append({
                 "url": original.url,
                 "title": original.title,
@@ -289,23 +509,31 @@ def summarize_stories(stories):
                     "meta", original.title, summary, highlights, why_it_matters, original.url
                 ),
             })
+            selected_sources.append(original)
             if len(selected) == 8:
                 break
+        if stories and not selected:
+            raise ValueError("Gemini did not return any stories with matching source URLs")
         return {
-            "topline": str(result.get("topline", ""))[:500],
+            "topline": clean_editorial_text(result.get("topline", ""))[:500],
             "stories": selected,
         }
     except Exception:
-        logging.exception("AI summarization failed; sending source excerpts instead")
+        logging.exception(
+            "Gemini summarization failed using model %s for %d stories; "
+            "sending source excerpts instead",
+            model,
+            len(stories),
+        )
         return fallback_digest(stories)
 
 
 def fallback_digest(stories):
     digest_stories = []
     for story in stories[:8]:
-        summary = complete_sentence_text(story.excerpt, 900)
-        highlights = [summary] if summary else []
-        why_it_matters = "Review the original report for affected products and recommended actions."
+        summary = complete_sentence_text(strip_feed_boilerplate(story.excerpt), 900)
+        highlights = []
+        why_it_matters = ""
         digest_stories.append({
                 "url": story.url,
                 "title": story.title,
@@ -315,7 +543,7 @@ def fallback_digest(stories):
                 "highlights": highlights,
                 "why_it_matters": why_it_matters,
                 "category": ", ".join(story.topics) or "Cybersecurity",
-                "severity": "Informational",
+                "severity": "Unassessed",
                 "linkedin_post": fallback_social_post(
                     "linkedin", story.title, summary, highlights, why_it_matters, story.url
                 ),
@@ -324,7 +552,11 @@ def fallback_digest(stories):
                 ),
             })
     return {
-        "topline": "Here are the most relevant cybersecurity updates found in the last 48 hours.",
+        "topline": (
+            "Here are the most relevant cybersecurity updates found in the last 48 hours."
+            if digest_stories else
+            "No new qualifying cybersecurity updates were found in the last 48 hours."
+        ),
         "stories": digest_stories,
     }
 
@@ -332,7 +564,9 @@ def fallback_digest(stories):
 def build_email(digest, now):
     date_label = now.strftime("%A, %B %-d, %Y") if os.name != "nt" else now.strftime("%A, %B %#d, %Y")
     subject = f"Cybersecurity Daily Briefing | {now.strftime('%Y-%m-%d')}"
-    topline = digest["topline"] or "Today's cybersecurity briefing is ready."
+    topline = clean_editorial_text(
+        digest["topline"] or "Today's cybersecurity briefing is ready."
+    )
     text_lines = [f"CYBERSECURITY DAILY BRIEFING - {date_label}", "", topline, ""]
     html_stories = []
     for item in digest["stories"]:
@@ -343,16 +577,24 @@ def build_email(digest, now):
         published = item.get("published", "")[:10]
         severity = item.get("severity", "Informational")
         category = item.get("category", "Cybersecurity")
-        summary = item.get("summary", "")
-        highlights = item.get("highlights", [])
-        why = item.get("why_it_matters", "")
-        linkedin_post = item.get("linkedin_post", "")
-        meta_post = item.get("meta_post", "")
+        summary = clean_editorial_text(item.get("summary", ""))
+        highlights = [
+            clean_editorial_text(point)
+            for point in item.get("highlights", [])
+            if clean_editorial_text(point)
+        ]
+        why = clean_editorial_text(item.get("why_it_matters", ""))
+        linkedin_post = clean_editorial_text(item.get("linkedin_post", ""))
+        meta_post = clean_editorial_text(item.get("meta_post", ""))
         source = item.get("source", "Source")
         text_lines.extend([
             f"[{severity.upper()}] {category}: {title}", f"{source} | {published}", summary,
-            "Key points:", *[f"- {point}" for point in highlights],
-            f"Why it matters: {why}", f"Read more: {url}",
+            *(
+                ["Key points:", *[f"- {point}" for point in highlights]]
+                if highlights else []
+            ),
+            *([f"Why it matters: {why}"] if why else []),
+            f"Read more: {url}",
         ])
         if linkedin_post:
             text_lines.extend(["LinkedIn post (professional):", linkedin_post])
@@ -360,6 +602,15 @@ def build_email(digest, now):
             text_lines.extend(["Meta post (punchy):", meta_post])
         text_lines.append("")
         highlight_html = "".join(f"<li>{html.escape(str(point))}</li>" for point in highlights)
+        highlights_html = (
+            f"<strong>Key points</strong><ul style='padding-left:20px'>{highlight_html}</ul>"
+            if highlights else ""
+        )
+        why_html = (
+            f"<p style='margin:6px 0;color:#53645f'><strong>Why it matters:</strong> "
+            f"{html.escape(why)}</p>"
+            if why else ""
+        )
         social_html = ""
         if linkedin_post:
             social_html += (
@@ -381,18 +632,16 @@ def build_email(digest, now):
             f"<h2 style='font-size:18px;line-height:1.35;margin:8px 0'><a style='color:#143d35' "
             f"href='{html.escape(url, quote=True)}'>{html.escape(title)}</a></h2>"
             f"<p style='margin:6px 0;color:#283a36'>{html.escape(summary)}</p>"
-            f"<strong>Key points</strong><ul style='padding-left:20px'>{highlight_html}</ul>"
-            f"<p style='margin:6px 0;color:#53645f'><strong>Why it matters:</strong> "
-            f"{html.escape(why)}</p>"
+            f"{highlights_html}{why_html}"
             f"<p style='margin:10px 0'><a style='color:#a33d27;font-weight:bold' "
             f"href='{html.escape(url, quote=True)}'>Read more at {html.escape(source)} &rarr;</a></p>"
             f"{social_html}</article>"
         )
 
     if not html_stories:
-        text_lines.append("No qualifying stories were found in the monitored feeds during the last 48 hours.")
+        text_lines.append("No new qualifying stories were found in the monitored feeds during the last 48 hours.")
         html_stories.append(
-            "<p>No qualifying stories were found in the monitored feeds during the last 48 hours.</p>"
+            "<p>No new qualifying stories were found in the monitored feeds during the last 48 hours.</p>"
         )
 
     html_body = (
@@ -439,9 +688,13 @@ def main():
     now = datetime.now(timezone.utc)
     stories = collect_stories(now)
     logging.info("Collected %d relevant stories", len(stories))
+    history = load_story_history(now=now)
+    stories = filter_previously_sent(stories, history)
+    logging.info("%d stories remain after sent-story deduplication", len(stories))
     digest = summarize_stories(stories)
     subject, text_body, html_body = build_email(digest, now)
     send_email(subject, text_body, html_body)
+    save_story_history(digest["stories"], history, now=now)
     return 0
 
 

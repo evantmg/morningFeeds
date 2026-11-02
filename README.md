@@ -4,7 +4,7 @@ A scheduled news agent that gathers recent reporting across cybersecurity, cloud
 
 ## What it monitors
 
-CISA advisories, The Hacker News, BleepingComputer, Krebs on Security, Microsoft Security, AWS Security, Google Security Blog, Cloudflare, Cisco Talos, Unit 42, Dark Reading, SecurityWeek, InfoSecurity Magazine, SANS Internet Storm Center, NIST, NSA News, Jason Haddix, and OWASP GenAI Security. The collector looks back 48 hours, removes duplicate links, ranks likely high-impact reports, and includes up to 8 selected stories with a direct source link in the email. CISA's feed may be inaccessible from some networks; feed failures are logged.
+CISA Advisories, The Hacker News, BleepingComputer, Krebs on Security, Microsoft Security, AWS Security, Google Security Blog, Cloudflare, Cisco Talos, Unit 42, Dark Reading, SecurityWeek, InfoSecurity Magazine, SANS Internet Storm Center, NIST, NSA News, Jason Haddix, and OWASP GenAI Security. The collector looks back 48 hours, removes duplicate links and previously sent stories (tracked for 30 days), ranks likely high-impact reports, and includes up to 8 selected stories with a direct source link in the email. GitHub Actions preserves the sent-story history in its cache. CISA's feed may be inaccessible from some networks; feed failures are logged.
 
 ## Enable daily delivery
 
@@ -14,7 +14,7 @@ CISA advisories, The Hacker News, BleepingComputer, Krebs on Security, Microsoft
    - `GMAIL_APP_PASSWORD`: a Google App Password for that account. Use an App Password, not your normal Gmail password; Google account 2-Step Verification must be enabled.
    - `GEMINI_API_KEY`: a Gemini API key for AI story selection and summarization.
 3. Optionally add the `GEMINI_MODEL` repository variable to choose a different Gemini model; it defaults to `gemini-3.8-flash`.
-4. Ensure GitHub Actions are enabled. The workflow is scheduled to send the email daily at **06:00 Nepal Time (00:15 UTC)**. Run it once from **Actions → Daily cybersecurity briefing → Run workflow** to test delivery.
+4. Ensure GitHub Actions are enabled. The workflow is scheduled to send the email daily at **06:00 Nepal Time (00:13 UTC)**. Run it once from **Actions → Daily cybersecurity briefing → Run workflow** to test delivery.
 
 The repository must be on GitHub for its scheduled workflow to run. GitHub schedule times are UTC and may be delayed during high-load periods, so delivery may be later than 06:00. The first manual run will also confirm the secrets and Gmail account are configured correctly.
 
@@ -27,4 +27,4 @@ python -m pip install -r requirements.txt
 python cybersec_digest.py
 ```
 
-The Gemini key is optional at runtime: without it, the email includes ranked source excerpts and template LinkedIn/Meta drafts. When Gemini omits a social draft for an individual story, the agent fills it with a source-based template. Gmail sender and App Password are required to send any email. Feed and AI failures are logged; AI failures fall back to source excerpts. Review generated summaries and social copy against each linked source before posting.
+The Gemini key is optional at runtime: without it, the email includes ranked source excerpts and template LinkedIn/Meta drafts. When Gemini omits a social draft for an individual story, the agent fills it with a source-based template. Gmail sender and App Password are required to send any email. Feed and AI failures are logged; AI failures fall back to source excerpts without generic "review the original report" filler. Check the GitHub Actions run log for the exact Gemini error if the fallback is used (for example, authentication, quota/rate limits, network errors, or a malformed response). Review generated summaries and social copy against each linked source before posting.
