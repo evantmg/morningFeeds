@@ -371,6 +371,39 @@ def format_social_post(post, url):
     return post
 
 
+def add_linkedin_emoji(post, context):
+    post = str(post or "").strip()
+    if not post:
+        return post
+
+    relevant_emojis = ("🚨", "⚠️", "🔑", "☁️", "🤖", "🛠️", "🛡️")
+    if any(emoji in post for emoji in relevant_emojis):
+        return post
+
+    context = str(context or "").casefold()
+    if any(term in context for term in ("credential", "authentication", "identity", "api key")):
+        emoji = "🔑"
+    elif any(term in context for term in ("breach", "compromise", "exposed", "leak", "stolen")):
+        emoji = "🚨"
+    elif any(term in context for term in ("zero-day", "zero day", "cve-", "exploit", "vulnerability")):
+        emoji = "⚠️"
+    elif any(term in context for term in ("cloud", "aws", "azure", "kubernetes", "saas")):
+        emoji = "☁️"
+    elif (
+        any(term in context for term in ("artificial intelligence", "llm", "machine learning"))
+        or re.search(r"\bai\b", context)
+    ):
+        emoji = "🤖"
+    elif any(term in context for term in ("patch", "mitigation", "defense")):
+        emoji = "🛠️"
+    else:
+        emoji = "🛡️"
+
+    if post.startswith("🔎 "):
+        return f"{emoji} {post[2:]}"
+    return f"{emoji} {post}"
+
+
 def fallback_social_post(platform, title, summary, highlights, why_it_matters, url):
     summary = complete_sentence_text(summary, 300)
     takeaway = next(
@@ -394,7 +427,7 @@ def fallback_social_post(platform, title, summary, highlights, why_it_matters, u
             parts.append(context)
         parts.append("#CyberSecurity #InfoSec #CyberNews")
     else:
-        parts = [f"🔎 {title}"]
+        parts = [title]
         if summary:
             parts.append(summary)
         if takeaway and takeaway not in (summary, context) and takeaway not in summary:
@@ -403,6 +436,8 @@ def fallback_social_post(platform, title, summary, highlights, why_it_matters, u
             parts.append(context)
         parts.append("#CyberSecurity #InfoSec")
     post = "\n\n".join(parts)
+    if platform != "meta":
+        post = add_linkedin_emoji(post, f"{title} {summary} {why_it_matters}")
     return format_social_post(post, url)
 
 
@@ -437,7 +472,10 @@ def summarize_stories(stories):
                     "('Critical', 'High', 'Medium', or 'Informational'), 'linkedin_post', and "
                     "'meta_post'. Keep source titles and URLs unchanged. Write each LinkedIn post "
                     "as polished professional copy, around 45-60 words, with a useful hook and "
-                    "context. Write each Meta post as punchy, energetic, lightly witty copy, around "
+                    "context. Include 1-2 relevant emojis naturally in each LinkedIn post, chosen "
+                    "for the story (for example, a warning for an actively exploited flaw or a key "
+                    "for exposed credentials); avoid decorative or repetitive emoji use. Write each "
+                    "Meta post as punchy, energetic, lightly witty copy, around "
                     "40-55 words; never joke about victims or exaggerate risk. Keep each post concise "
                     "and avoid repeating the same point. Format both posts in 1-3 short paragraphs "
                     "with a blank line between paragraphs; put each sentence "
@@ -487,7 +525,11 @@ def summarize_stories(stories):
             ):
                 why_it_matters = ""
             linkedin_post = format_social_post(
-                clean_editorial_text(item.get("linkedin_post")), original.url
+                add_linkedin_emoji(
+                    clean_editorial_text(item.get("linkedin_post")),
+                    f"{original.title} {summary} {why_it_matters}",
+                ),
+                original.url,
             )
             meta_post = format_social_post(
                 clean_editorial_text(item.get("meta_post")), original.url
