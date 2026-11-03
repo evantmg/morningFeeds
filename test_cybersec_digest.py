@@ -101,13 +101,37 @@ class DigestRegressionTests(unittest.TestCase):
 
     def test_severity_is_inferred_from_supported_evidence(self):
         self.assertEqual(infer_severity("Critical vulnerability, CVSS 9.8"), "Critical")
+        self.assertEqual(infer_severity("CVSS v3.1 Base Score: 9.8"), "Critical")
+        self.assertEqual(infer_severity("CVSS:3.1: 7.8"), "High")
         self.assertEqual(infer_severity("Actively exploited RCE"), "High")
+        self.assertEqual(
+            normalize_severity(
+                "Informational",
+                "Brazil's largest exchange confirms a cyberattack as more than $46 million leaves.",
+            ),
+            "High",
+        )
+        self.assertEqual(
+            normalize_severity(
+                "Informational",
+                "A CVE vulnerability affects the Linux kernel.",
+            ),
+            "Medium",
+        )
         self.assertEqual(infer_severity("CVSS 5.4 moderate vulnerability"), "Medium")
         self.assertEqual(infer_severity("CVSS 2.1 low vulnerability"), "Low")
         self.assertEqual(infer_severity("A new security research report"), "Informational")
         self.assertEqual(
             normalize_severity("Unassessed", "Actively exploited flaw"),
             "High",
+        )
+        self.assertEqual(
+            normalize_severity("Informational", "Critical vulnerability, CVSS 9.8"),
+            "Critical",
+        )
+        self.assertEqual(
+            normalize_severity("", "A newly disclosed security vulnerability"),
+            "Medium",
         )
 
     def test_short_generated_posts_fall_back_without_repeating_headline(self):
@@ -209,6 +233,11 @@ class DigestRegressionTests(unittest.TestCase):
         self.assertLess(high_server_position, medium_position)
         self.assertIn("EVERYDAY TECH IMPACT: Android", text_body)
         self.assertIn("EVERYDAY TECH IMPACT &mdash;", html_body)
+        self.assertIn(
+            "Updates: 4 | Critical: 1 | High: 2 | Medium: 1 | Low: 0 | Informational: 0",
+            text_body,
+        )
+        self.assertIn("Updates: 4 | Critical: 1 | High: 2", html_body)
         self.assertTrue(everyday_impact_label("A security flaw affects Chrome browser"))
 
     def test_digest_limit_allows_more_than_fifteen_stories(self):

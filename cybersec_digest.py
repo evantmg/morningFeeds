@@ -616,12 +616,18 @@ def remove_repeated_headline(title, post):
 
 def infer_severity(value):
     text = str(value or "").casefold()
-    cvss_match = re.search(
-        r"\bcvss(?:\s*v[0-9.]+)?\s*[:=]?\s*(10(?:\.0)?|[0-9](?:\.\d)?)\b",
-        text,
+    cvss_patterns = (
+        r"\bcvss\s*[:=]?\s*(?:v(?:ersion)?\s*)?[0-9]\.[0-9]\s*"
+        r"(?:base\s+score\s*)?[:=]?\s*(10(?:\.0)?|[0-9](?:\.\d)?)\b",
+        r"\bcvss(?:\s+score)?\s*[:=]\s*(10(?:\.0)?|[0-9](?:\.\d)?)\b",
+        r"\bcvss\s+(10(?:\.0)?|[0-9](?:\.\d)?)\b",
+    )
+    cvss_match = next(
+        (match for pattern in cvss_patterns if (match := re.search(pattern, text))),
+        None,
     )
     if cvss_match:
-        score = float(cvss_match.group(1))
+        score = float(cvss_match.group(cvss_match.lastindex))
         if score >= 9:
             return "Critical"
         if score >= 7:
@@ -638,7 +644,14 @@ def infer_severity(value):
         return "Critical"
     if re.search(
         r"\b(?:high[- ]severity|actively exploited|remote code execution|rce|"
-        r"privilege escalation)\b",
+        r"privilege escalation|exploited in (?:the wild|attacks)|"
+        r"exploitation in the wild|zero[- ]day|zero day|ransomware attack|"
+        r"data breach|confirmed cyber ?attack|confirms? (?:a )?cyber ?attack|"
+        r"personal data (?:was )?(?:exposed|stolen)|"
+        r"(?:stole|stolen) (?:vast amounts of )?(?:sensitive )?(?:data|records)|"
+        r"millions? of (?:devices|users|records) (?:were )?(?:affected|exposed|stolen)|"
+        r"(?:more than |over |at least )?\d+(?:\.\d+)?\s*(?:million|billion)\s+"
+        r"(?:[\w-]+\s+){0,2}(?:devices|users|records|accounts|customers|people))\b",
         text,
     ):
         return "High"
@@ -646,15 +659,29 @@ def infer_severity(value):
         return "Medium"
     if re.search(r"\blow[- ]severity\b", text):
         return "Low"
+    if re.search(
+        r"\b(?:vulnerability|security flaw|security bug|security issue|"
+        r"cve-\d{4}-\d{4,}|malware|botnet|infostealer|phishing|data theft)\b",
+        text,
+    ):
+        return "Medium"
     return "Informational"
 
 
 def normalize_severity(value, supporting_text):
     severity = str(value or "").strip().casefold()
+    model_severity = None
     for level in ("critical", "high", "medium", "low", "informational"):
         if re.match(rf"\b{level}\b", severity):
-            return level.capitalize()
-    return infer_severity(supporting_text)
+            model_severity = level.capitalize()
+            break
+    evidence_severity = infer_severity(supporting_text)
+    if model_severity is None:
+        return evidence_severity
+    return min(
+        (model_severity, evidence_severity),
+        key=lambda level: severity_order(level),
+    )
 
 
 def add_linkedin_emoji(post, context):
@@ -892,15 +919,38 @@ def build_email(digest, now):
     topline = clean_editorial_text(
         digest["topline"] or "Today's cybersecurity briefing is ready."
     )
-    text_lines = [f"CYBERSECURITY DAILY BRIEFING - {date_label}", "", topline, ""]
+    stories = [
+        item for item in sorted(digest["stories"], key=story_order_key)
+        if urlparse(item.get("url", "")).scheme in ("http", "https")
+    ]
+    severity_counts = {level: 0 for level in ("Critical", "High", "Medium", "Low", "Informational")}
+    for item in stories:
+        severity = normalize_severity(
+            item.get("severity"),
+            f"{item.get('title', '')} {item.get('summary', '')} "
+            f"{' '.join(item.get('highlights', []))}",
+        )
+        severity_counts[severity] += 1
+    counts_line = (
+        f"Updates: {len(stories)} | "
+        + " | ".join(f"{level}: {severity_counts[level]}" for level in severity_counts)
+    )
+    text_lines = [
+        f"CYBERSECURITY DAILY BRIEFING - {date_label}",
+        counts_line,
+        "",
+        topline,
+        "",
+    ]
     html_stories = []
-    for item in sorted(digest["stories"], key=story_order_key):
+    for item in stories:
         title = item["title"]
         url = item["url"]
-        if urlparse(url).scheme not in ("http", "https"):
-            continue
         published = item.get("published", "")[:10]
-        severity = item.get("severity", "Informational")
+        severity = normalize_severity(
+            item.get("severity"),
+            f"{title} {item.get('summary', '')} {' '.join(item.get('highlights', []))}",
+        )
         category = item.get("category", "Cybersecurity")
         summary = clean_editorial_text(item.get("summary", ""))
         highlights = [
@@ -990,7 +1040,9 @@ def build_email(digest, now):
         "<div style='border-top:5px solid #c4472d;padding-top:16px'>"
         "<div style='font-size:12px;letter-spacing:1px;color:#53645f'>GLOBAL SECURITY WATCH</div>"
         "<h1 style='font-size:27px;margin:8px 0'>Cybersecurity Daily Briefing</h1>"
-        f"<p style='color:#53645f'>{html.escape(date_label)}</p></div>"
+        f"<p style='color:#53645f'>{html.escape(date_label)}</p>"
+        f"<p style='padding:10px;background:#f1f5f3;font-weight:bold'>"
+        f"{html.escape(counts_line)}</p></div>"
         f"<p style='font-size:16px;line-height:1.6'>{html.escape(topline)}</p>"
         f"{''.join(html_stories)}"
         "<p style='font-size:12px;color:#71807c;margin-top:24px'>AI-generated summaries and "
