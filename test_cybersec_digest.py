@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -10,6 +11,8 @@ from cybersec_digest import (
     MAX_DIGEST_STORIES,
     Story,
     build_email,
+    clean_editorial_text,
+    create_social_post,
     everyday_impact_label,
     fallback_digest,
     infer_severity,
@@ -56,10 +59,45 @@ class DigestRegressionTests(unittest.TestCase):
         result = fallback_digest([story])["stories"][0]
 
         self.assertEqual(result["severity"], "Informational")
+        summary_body = result["summary"]
+        self.assertGreaterEqual(len(re.findall(r"[.!?](?:\s|$)", summary_body)), 3)
+        self.assertGreaterEqual(len(summary_body.split("\n\n")), 3)
         for platform in ("linkedin_post", "meta_post"):
             self.assertIn("The vendor fixed", result[platform])
             self.assertNotIn(story.title, result[platform])
             self.assertIn(story.url, result[platform])
+            self.assertGreaterEqual(
+                len(re.findall(r"[.!?](?:\s|$)", result[platform].split("\n\n#")[0])),
+                3,
+            )
+
+    def test_social_posts_have_three_sentences_and_copy_friendly_spacing(self):
+        post = create_social_post(
+            "meta",
+            "Android security issue disclosed",
+            "Researchers found a backdoor in Android TV devices.",
+            "Researchers found a backdoor in Android TV devices.",
+            ["More than one million devices were affected."],
+            "Google disrupted the command infrastructure.",
+            "Android security issue botnet",
+            "https://example.com/report",
+        )
+
+        body = post.split("\n\n#")[0]
+        self.assertGreaterEqual(len(re.findall(r"[.!?](?:\s|$)", body)), 3)
+        self.assertGreaterEqual(len(body.split("\n\n")), 3)
+        self.assertIn("🚨", body)
+        self.assertIn("#AndroidSecurity", post)
+        self.assertIn("#CyberNews", post)
+        self.assertTrue(post.endswith("https://example.com/report"))
+
+    def test_removes_image_caption_and_accessibility_feed_artifacts(self):
+        text = clean_editorial_text(
+            "Google disrupted the botnet. XCPE malware overview (Source: Google) "
+            "Access The business model was access."
+        )
+
+        self.assertEqual(text, "Google disrupted the botnet.")
 
     def test_severity_is_inferred_from_supported_evidence(self):
         self.assertEqual(infer_severity("Critical vulnerability, CVSS 9.8"), "Critical")

@@ -1,6 +1,6 @@
 # Cybersecurity Daily Briefing
 
-A scheduled news agent that gathers recent reporting across cybersecurity, cloud, AI security, data protection and privacy, identity, applications, software supply chains, operating systems, networks, cybercrime, and critical infrastructure. Gemini selects up to 30 important stories from as many as 100 candidates, prioritizing severity and broad impact. Stories affecting widely used products and services (such as Windows, Android, iOS, browsers, and messaging apps) are specially highlighted. Social drafts do not repeat the article headline, and source-based drafts are used when generated copy is too short.
+A scheduled news agent that gathers recent reporting across cybersecurity, cloud, AI security, data protection and privacy, identity, applications, software supply chains, operating systems, networks, cybercrime, and critical infrastructure. Gemini selects up to 30 important stories from as many as 100 candidates, prioritizing severity and broad impact. Stories affecting widely used products and services (such as Windows, Android, iOS, browsers, and messaging apps) are specially highlighted. Story summaries and social drafts contain at least three sentences, separated by blank lines for readability and copy/paste. Social drafts avoid repeating the article headline, include relevant emojis and hashtags, and use source-based fallbacks when generated copy is too short.
 
 ## What it monitors
 
