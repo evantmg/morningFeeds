@@ -18,6 +18,7 @@ from cybersec_digest import (
     fallback_digest,
     infer_severity,
     normalize_severity,
+    parse_cvss_score,
     remove_repeated_headline,
     remove_redundant_sentences,
     summarize_stories,
@@ -92,6 +93,30 @@ class DigestRegressionTests(unittest.TestCase):
         self.assertIn("#AndroidSecurity", post)
         self.assertIn("#CyberNews", post)
         self.assertTrue(post.endswith("https://example.com/report"))
+
+    def test_linkedin_and_meta_fallbacks_have_distinct_platform_tone(self):
+        title = "Prediction market repays traders after site compromise"
+        summary = (
+            "Polymarket will repay approximately $3.9 million to traders affected by "
+            "a website compromise."
+        )
+        shared = (
+            title,
+            "",
+            summary,
+            ["The company will also compensate users for downtime."],
+            "",
+            f"{title} {summary}",
+            "https://example.com/polymarket",
+        )
+
+        linkedin = create_social_post("linkedin", *shared)
+        meta = create_social_post("meta", *shared)
+
+        self.assertNotEqual(linkedin, meta)
+        self.assertIn("Security update:", linkedin)
+        self.assertIn("Security plot twist:", meta)
+        self.assertIn("A quick check now beats an awkward surprise later.", meta)
 
     def test_social_post_keeps_generated_copy_without_appending_duplicate_summary(self):
         headline = "Google Introduces Cloud Bug Bounty"
@@ -170,11 +195,37 @@ class DigestRegressionTests(unittest.TestCase):
         self.assertEqual(infer_severity("Critical vulnerability, CVSS 9.8"), "Critical")
         self.assertEqual(infer_severity("CVSS v3.1 Base Score: 9.8"), "Critical")
         self.assertEqual(infer_severity("CVSS:3.1: 7.8"), "High")
+        self.assertEqual(infer_severity("CVSS v4.0 score of 8.6"), "High")
+        self.assertEqual(parse_cvss_score("CVSS 3.1 is the scoring version"), None)
+        self.assertEqual(parse_cvss_score("CVSS score: 0.0"), 0.0)
         self.assertEqual(infer_severity("Actively exploited RCE"), "High")
+        self.assertEqual(
+            infer_severity("A critical, actively exploited flaw has a CVSS score of 5.4."),
+            "Medium",
+        )
+        self.assertEqual(
+            infer_severity("A critical vulnerability has a CVSS score of 0.0."),
+            "Informational",
+        )
+        self.assertEqual(
+            normalize_severity(
+                "Critical",
+                "A flaw has CVSS v3.1 Base Score: 4.0.",
+            ),
+            "Medium",
+        )
         self.assertEqual(
             normalize_severity(
                 "Informational",
                 "Brazil's largest exchange confirms a cyberattack as more than $46 million leaves.",
+            ),
+            "High",
+        )
+        self.assertEqual(
+            normalize_severity(
+                "Informational",
+                "Prediction market Polymarket returns $3.9 million after a site compromise "
+                "involving malicious script injection.",
             ),
             "High",
         )
@@ -199,6 +250,83 @@ class DigestRegressionTests(unittest.TestCase):
         self.assertEqual(
             normalize_severity("", "A newly disclosed security vulnerability"),
             "Medium",
+        )
+
+    def test_cvss_score_is_carried_into_digest_and_email(self):
+        story = Story(
+            title="Critical application vulnerability",
+            url="https://example.com/cve",
+            source="Example",
+            published="2026-11-02T00:00:00+00:00",
+            excerpt=(
+                "The actively exploited vulnerability has a CVSS v3.1 Base Score: 5.4. "
+                "The vendor released a patch. Customers should update affected systems."
+            ),
+            score=5,
+            topics=["Threats & Vulnerabilities"],
+        )
+        response = {
+            "stories": [{
+                "url": story.url,
+                "summary": (
+                    "The vendor disclosed a critical vulnerability. "
+                    "A patch is available. Customers should update affected systems."
+                ),
+                "highlights": ["The vendor released a patch."],
+                "severity": "Critical",
+                "linkedin_post": "",
+                "meta_post": "",
+            }],
+        }
+        client = SimpleNamespace(
+            models=SimpleNamespace(
+                generate_content=lambda **kwargs: SimpleNamespace(text=json.dumps(response))
+            )
+        )
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "test-key"}):
+            with patch("cybersec_digest.genai.Client", return_value=client):
+                digest = summarize_stories([story])
+
+        item = digest["stories"][0]
+        self.assertEqual(item["severity"], "Medium")
+        self.assertEqual(item["cvss_score"], 5.4)
+        _, text_body, html_body = build_email(
+            digest, datetime(2026, 11, 3, tzinfo=timezone.utc)
+        )
+        self.assertIn("[MEDIUM] | CVSS 5.4", text_body)
+        self.assertIn("CVSS 5.4", html_body)
+
+    def test_same_severity_stories_are_ordered_by_cvss_score(self):
+        stories = [
+            {
+                "title": "Lower-scored high vulnerability",
+                "url": "https://example.com/lower",
+                "source": "Example",
+                "published": "2026-11-02T00:00:00+00:00",
+                "severity": "High",
+                "cvss_score": 7.4,
+                "summary": "A vulnerability affects an application.",
+            },
+            {
+                "title": "Higher-scored high vulnerability",
+                "url": "https://example.com/higher",
+                "source": "Example",
+                "published": "2026-11-02T00:00:00+00:00",
+                "severity": "High",
+                "cvss_score": 8.9,
+                "summary": "A vulnerability affects an application.",
+            },
+        ]
+
+        _, text_body, _ = build_email(
+            {"topline": "Updates.", "stories": stories},
+            datetime(2026, 11, 3, tzinfo=timezone.utc),
+        )
+
+        self.assertLess(
+            text_body.index("[HIGH] | CVSS 8.9"),
+            text_body.index("[HIGH] | CVSS 7.4"),
         )
 
     def test_short_generated_posts_fall_back_without_repeating_headline(self):

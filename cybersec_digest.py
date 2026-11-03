@@ -205,13 +205,17 @@ def story_order_key(story):
     if isinstance(story, Story):
         title = story.title
         text = f"{title} {story.excerpt}"
+        cvss_score = parse_cvss_score(text)
         severity = infer_severity(text)
         score = story.score
         published = story.published
     else:
         title = str(story.get("title", ""))
         text = f"{title} {story.get('summary', '')} {story.get('excerpt', '')}"
-        severity = normalize_severity(story.get("severity"), text)
+        cvss_score = story.get("cvss_score")
+        severity = normalize_severity(story.get("severity"), "", cvss_score)
+        if cvss_score is None:
+            cvss_score = parse_cvss_score(text)
         score = story.get("score", 0)
         published = story.get("published", "")
     try:
@@ -220,6 +224,7 @@ def story_order_key(story):
         published_order = 0
     return (
         severity_order(severity),
+        -(cvss_score if cvss_score is not None else -1),
         not bool(everyday_impact_label(text)),
         -score,
         published_order,
@@ -549,12 +554,10 @@ def ensure_three_sentence_summary(summary, source_excerpt, highlights, why_it_ma
         sentences.extend(remove_redundant_sentences(candidate_sentences, sentences))
         if len(sentences) >= 3:
             break
-    fallbacks = (
-        "The available feed excerpt does not include further confirmed details.",
-        "See the linked report for full context and any response guidance.",
-        "Use the source link to read the complete report.",
-    )
-    for fallback in fallbacks:
+    for fallback in (
+        "Readers can check whether the report applies to products or services they use.",
+        "Affected users should rely on official guidance before taking action.",
+    ):
         if len(sentences) >= 3:
             break
         sentences.append(fallback)
@@ -614,8 +617,41 @@ def create_social_post(platform, title, post, summary, highlights, why_it_matter
     if len(sentences) < 3:
         add_sentences(why_it_matters)
 
-    copy = "\n\n".join(sentences[:5])
-    copy = add_linkedin_emoji(copy, f"{title} {summary} {context}")
+    facts = sentences[:5]
+    if not facts:
+        facts = social_sentences(summary)[:1] or social_sentences(context)[:1]
+    if not facts:
+        facts = ["A new cybersecurity development has been reported."]
+    topic = next(
+        (tag.removeprefix("#") for tag in relevant_hashtags(context, platform)[2:3]),
+        "cybersecurity",
+    )
+    primary = facts[0]
+    details = remove_redundant_sentences(facts[1:], [primary])[:2]
+    if platform == "meta":
+        copy_sentences = [
+            f"🚨 Security plot twist: {primary}",
+            *details[:1],
+            (
+                f"Plot twist: {details[-1]}"
+                if len(details) > 1 else
+                "A quick check now beats an awkward surprise later."
+            ),
+        ]
+    else:
+        copy_sentences = [
+            f"Security update: {primary}",
+            *details[:1],
+            (
+                f"Practical takeaway: {details[-1]}"
+                if len(details) > 1 else
+                f"For teams tracking {topic}, review the relevant controls and response plans."
+            ),
+        ]
+    copy = "\n\n".join(copy_sentences[:5])
+    emoji_context = f"{title} {summary} {context}"
+    if platform != "meta":
+        copy = add_linkedin_emoji(copy, emoji_context)
     hashtags = relevant_hashtags(f"{title} {summary} {context}", platform)
     copy = f"{copy}\n\n{' '.join(hashtags)}"
     return format_social_post(copy, url)
@@ -637,28 +673,54 @@ def remove_repeated_headline(title, post):
     return f"{match.group(1)}{remainder}".strip() if remainder else ""
 
 
+CVSS_SCORE_PATTERNS = (
+    re.compile(
+        r"\bcvss\s*:?\s*(?:v(?:ersion)?\s*)?[234]\.\d\s*"
+        r"(?:(?:base\s+)?score\s*(?:of\s*)?[:=]?\s*)"
+        r"(?P<score>10(?:\.0)?|[0-9](?:\.\d)?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bcvss\s*:?\s*(?:v(?:ersion)?\s*)?[234]\.\d\s*:\s*"
+        r"(?P<score>10(?:\.0)?|[0-9](?:\.\d)?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bcvss(?:\s+score)?\s*(?:[:=]\s*|\s+)"
+        r"(?:of\s*)?(?!(?:2\.0|3\.[01]|4\.0)\b)"
+        r"(?P<score>10(?:\.0)?|[0-9](?:\.\d)?)\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def parse_cvss_score(value):
+    text = str(value or "")
+    scores = [
+        float(match.group("score"))
+        for pattern in CVSS_SCORE_PATTERNS
+        for match in pattern.finditer(text)
+    ]
+    return max(scores) if scores else None
+
+
+def cvss_severity(score):
+    if score >= 9:
+        return "Critical"
+    if score >= 7:
+        return "High"
+    if score >= 4:
+        return "Medium"
+    if score > 0:
+        return "Low"
+    return "Informational"
+
+
 def infer_severity(value):
     text = str(value or "").casefold()
-    cvss_patterns = (
-        r"\bcvss\s*[:=]?\s*(?:v(?:ersion)?\s*)?[0-9]\.[0-9]\s*"
-        r"(?:base\s+score\s*)?[:=]?\s*(10(?:\.0)?|[0-9](?:\.\d)?)\b",
-        r"\bcvss(?:\s+score)?\s*[:=]\s*(10(?:\.0)?|[0-9](?:\.\d)?)\b",
-        r"\bcvss\s+(10(?:\.0)?|[0-9](?:\.\d)?)\b",
-    )
-    cvss_match = next(
-        (match for pattern in cvss_patterns if (match := re.search(pattern, text))),
-        None,
-    )
-    if cvss_match:
-        score = float(cvss_match.group(cvss_match.lastindex))
-        if score >= 9:
-            return "Critical"
-        if score >= 7:
-            return "High"
-        if score >= 4:
-            return "Medium"
-        if score > 0:
-            return "Low"
+    score = parse_cvss_score(text)
+    if score is not None:
+        return cvss_severity(score)
     if re.search(
         r"\b(?:critical[- ]severity|maximum[- ]severity|critical vulnerability|"
         r"critical flaw|critical bug)\b",
@@ -670,6 +732,14 @@ def infer_severity(value):
         r"privilege escalation|exploited in (?:the wild|attacks)|"
         r"exploitation in the wild|zero[- ]day|zero day|ransomware attack|"
         r"data breach|confirmed cyber ?attack|confirms? (?:a )?cyber ?attack|"
+        r"(?:website|site|domain|account|service) (?:was )?(?:compromised|hijacked)|"
+        r"(?:site|service|account) compromise|compromised (?:website|site|service|account)|"
+        r"hijacked (?:active )?(?:trading )?sessions?|"
+        r"(?:script|code) injection|malicious script|security incident|"
+        r"\bcyber ?attack\b|\bhacked\b|"
+        r"(?:stolen|lost|drained|withdrawn) \$?\d+(?:\.\d+)?\s*(?:million|billion)|"
+        r"\$\d+(?:\.\d+)?\s*(?:million|billion).{0,30}(?:stolen|lost|drained)|"
+        r"customers? (?:funds|money) (?:were )?(?:stolen|lost)|"
         r"personal data (?:was )?(?:exposed|stolen)|"
         r"(?:stole|stolen) (?:vast amounts of )?(?:sensitive )?(?:data|records)|"
         r"millions? of (?:devices|users|records) (?:were )?(?:affected|exposed|stolen)|"
@@ -691,13 +761,26 @@ def infer_severity(value):
     return "Informational"
 
 
-def normalize_severity(value, supporting_text):
+def normalize_severity(value, supporting_text, cvss_score=None):
+    score = parse_cvss_score(supporting_text)
+    if score is None and cvss_score is not None:
+        try:
+            score = float(cvss_score)
+        except (TypeError, ValueError):
+            score = None
+        if score is not None and not 0 <= score <= 10:
+            score = None
+    if score is not None:
+        return cvss_severity(score)
+
     severity = str(value or "").strip().casefold()
     model_severity = None
     for level in ("critical", "high", "medium", "low", "informational"):
         if re.match(rf"\b{level}\b", severity):
             model_severity = level.capitalize()
             break
+    if not supporting_text:
+        return model_severity or "Informational"
     evidence_severity = infer_severity(supporting_text)
     if model_severity is None:
         return evidence_severity
@@ -757,7 +840,13 @@ def summarize_stories(stories):
         logging.warning("GEMINI_API_KEY is not configured; using source excerpts")
         return fallback_digest(stories)
 
-    payload = [asdict(story) for story in stories]
+    payload = [
+        {
+            **asdict(story),
+            "cvss_score": parse_cvss_score(f"{story.title} {story.excerpt}"),
+        }
+        for story in stories
+    ]
     model = os.getenv("GEMINI_MODEL") or "gemini-3.8-flash"
     try:
         client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
@@ -784,16 +873,19 @@ def summarize_stories(stories):
                     "(otherwise an empty string; never use generic review-the-source wording), "
                     "'category', supported severity "
                     "('Critical', 'High', 'Medium', 'Low', or 'Informational'), "
-                    "'linkedin_post', and "
-                    "'meta_post'. Keep source titles and URLs unchanged. Write each LinkedIn post "
-                    "as polished professional copy with a useful hook and "
+                    "'linkedin_post', and 'meta_post'. When a source explicitly provides a "
+                    "CVSS base score, map severity from that score rather than wording. "
+                    "Keep source titles and URLs unchanged. Write each LinkedIn post "
+                    "as polished, professional, practical copy with a useful hook and "
                     "context; do not repeat the article headline. Add useful details beyond the "
                     "summary where the source permits. Each post must contain at least 3 distinct "
                     "complete, source-supported sentences. Separate sentences into short paragraphs "
                     "using a blank line between them. Include 1-2 relevant emojis naturally in "
                     "each post, chosen for the story; avoid decorative or repetitive emoji use. "
-                    "Write each Meta post as punchy, energetic, lightly witty copy; never joke "
-                    "about victims or exaggerate risk. Do not repeat the "
+                    "Write each Meta post in a distinctly different voice: punchy, conversational, "
+                    "energetic, and lightly humorous, using a harmless tech-related quip where "
+                    "appropriate. Never joke about victims or exaggerate risk. LinkedIn and Meta "
+                    "posts must not be identical or use the same framing. Do not repeat the "
                     "article headline; add distinct, source-supported context beyond the summary "
                     "where possible. Do not repeat the same point. Use a blank line between each "
                     "sentence so the copy remains readable when pasted into social apps. Include "
@@ -875,8 +967,11 @@ def summarize_stories(stories):
                 "published": original.published,
                 "category": str(item.get("category") or ", ".join(original.topics) or "Cybersecurity"),
                 "severity": normalize_severity(
-                    item.get("severity"), f"{original.title} {summary} {original.excerpt}"
+                    item.get("severity"),
+                    f"{original.title} {original.excerpt}",
+                    parse_cvss_score(f"{original.title} {original.excerpt}"),
                 ),
+                "cvss_score": parse_cvss_score(f"{original.title} {original.excerpt}"),
                 "summary": summary,
                 "highlights": highlights,
                 "why_it_matters": why_it_matters,
@@ -925,6 +1020,7 @@ def fallback_digest(stories):
                 "why_it_matters": why_it_matters,
                 "category": ", ".join(story.topics) or "Cybersecurity",
                 "severity": infer_severity(f"{story.title} {summary} {story.excerpt}"),
+                "cvss_score": parse_cvss_score(f"{story.title} {story.excerpt}"),
                 "linkedin_post": fallback_social_post(
                     "linkedin", story.title, summary, highlights, why_it_matters, story.url
                 ),
@@ -957,8 +1053,8 @@ def build_email(digest, now):
     for item in stories:
         severity = normalize_severity(
             item.get("severity"),
-            f"{item.get('title', '')} {item.get('summary', '')} "
-            f"{' '.join(item.get('highlights', []))}",
+            "",
+            item.get("cvss_score"),
         )
         severity_counts[severity] += 1
     counts_line = (
@@ -979,8 +1075,11 @@ def build_email(digest, now):
         published = item.get("published", "")[:10]
         severity = normalize_severity(
             item.get("severity"),
-            f"{title} {item.get('summary', '')} {' '.join(item.get('highlights', []))}",
+            "",
+            item.get("cvss_score"),
         )
+        cvss_score = item.get("cvss_score")
+        cvss_label = f" | CVSS {cvss_score:.1f}" if cvss_score is not None else ""
         category = item.get("category", "Cybersecurity")
         summary = clean_editorial_text(item.get("summary", ""))
         highlights = [
@@ -996,7 +1095,8 @@ def build_email(digest, now):
         meta_post = clean_editorial_text(item.get("meta_post", ""))
         source = item.get("source", "Source")
         text_lines.extend([
-            f"[{severity.upper()}] {category}: {title}", f"{source} | {published}", summary,
+            f"[{severity.upper()}]{cvss_label} {category}: {title}",
+            f"{source} | {published}", summary,
             *(
                 [f"EVERYDAY TECH IMPACT: {everyday_impact}"]
                 if everyday_impact else []
@@ -1045,6 +1145,7 @@ def build_email(digest, now):
         html_stories.append(
             "<article style='padding:18px 0;border-bottom:1px solid #e4e8e7'>"
             f"<div style='font-size:12px;color:#53645f'>{html.escape(severity.upper())} &nbsp;·&nbsp; "
+            f"{'CVSS ' + format(cvss_score, '.1f') + ' &nbsp;·&nbsp; ' if cvss_score is not None else ''}"
             f"{html.escape(category)} &nbsp;·&nbsp; {html.escape(source)} &nbsp;·&nbsp; "
             f"{html.escape(published)}</div>"
             f"<h2 style='font-size:18px;line-height:1.35;margin:8px 0'><a style='color:#143d35' "
