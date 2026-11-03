@@ -14,10 +14,12 @@ from cybersec_digest import (
     clean_editorial_text,
     create_social_post,
     everyday_impact_label,
+    ensure_three_sentence_summary,
     fallback_digest,
     infer_severity,
     normalize_severity,
     remove_repeated_headline,
+    remove_redundant_sentences,
     summarize_stories,
 )
 
@@ -90,6 +92,71 @@ class DigestRegressionTests(unittest.TestCase):
         self.assertIn("#AndroidSecurity", post)
         self.assertIn("#CyberNews", post)
         self.assertTrue(post.endswith("https://example.com/report"))
+
+    def test_social_post_keeps_generated_copy_without_appending_duplicate_summary(self):
+        headline = "Google Introduces Cloud Bug Bounty"
+        generated = (
+            "![🚨](https://fonts.gstatic.com/s/e/notoemoji/17.0/1f6a8/72.png) "
+            "Google raised its top cloud bounty to $250,000 for root compromise. "
+            "The reward targets architectural flaws that grant administrative control. "
+            "The program aims to help researchers uncover systemic weaknesses before attackers."
+        )
+        summary = (
+            "Google introduced a $250,000 top reward for root-level compromise in cloud "
+            "environments. The reward targets architectural flaws that grant administrative "
+            "control. The program aims to uncover weaknesses before attackers."
+        )
+
+        post = create_social_post(
+            "meta",
+            headline,
+            generated,
+            summary,
+            ["Google introduced a $250,000 top reward for root-level compromise."],
+            "The expanded program focuses on cloud infrastructure.",
+            f"{headline} {summary}",
+            "https://example.com/cloud-bounty",
+        )
+
+        body = post.split("\n\n#")[0]
+        self.assertEqual(len(re.findall(r"[.!?](?:\s|$)", body)), 3)
+        self.assertEqual(body.count("$250,000"), 1)
+        self.assertIn("🚨", body)
+        self.assertNotIn("![", body)
+        self.assertGreaterEqual(len(body.split("\n\n")), 3)
+
+    def test_summary_does_not_append_extra_source_excerpt_after_three_sentences(self):
+        summary = (
+            "Google introduced a $250,000 cloud bounty. "
+            "The reward targets architectural flaws. "
+            "Researchers can report systemic weaknesses."
+        )
+        source_excerpt = (
+            "Google introduced a $250,000 cloud bounty. "
+            "The reward targets architectural flaws. "
+            "Researchers can report systemic weaknesses. "
+            "The expanded program includes cloud infrastructure."
+        )
+
+        result = ensure_three_sentence_summary(summary, source_excerpt, [], "")
+
+        self.assertEqual(len(re.findall(r"[.!?](?:\s|$)", result)), 3)
+        self.assertNotIn("expanded program", result)
+
+    def test_story_highlights_repeating_summary_facts_are_filtered(self):
+        summary = [
+            "Google introduced a $250,000 top reward for root-level compromise in cloud environments.",
+            "The reward targets architectural flaws that grant administrative control.",
+        ]
+        highlights = [
+            "Google introduced a $250,000 top bounty for root control in its cloud.",
+            "The reward focuses on full administrative control over cloud infrastructure.",
+            "Researchers can report systemic weaknesses.",
+        ]
+
+        result = remove_redundant_sentences(highlights, summary)
+
+        self.assertEqual(result, ["Researchers can report systemic weaknesses."])
 
     def test_removes_image_caption_and_accessibility_feed_artifacts(self):
         text = clean_editorial_text(

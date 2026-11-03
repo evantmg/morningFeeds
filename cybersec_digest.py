@@ -500,7 +500,12 @@ def format_social_post(post, url):
 
 
 def social_sentences(value):
-    text = re.sub(r"https?://\S+", "", str(value or ""))
+    value = re.sub(
+        r"!\[([^\]]+)\]\([^)]+\)",
+        r"\1",
+        str(value or ""),
+    )
+    text = re.sub(r"https?://\S+", "", value)
     text = re.sub(r"(?<!\w)#[\w]+", "", text)
     return [
         sentence.strip()
@@ -509,18 +514,40 @@ def social_sentences(value):
     ]
 
 
+def normalized_social_sentence(sentence):
+    return re.sub(r"\W+", " ", sentence.casefold()).strip()
+
+
+def social_sentences_are_redundant(first, second):
+    first_words = set(normalized_social_sentence(first).split())
+    second_words = set(normalized_social_sentence(second).split())
+    if not first_words or not second_words:
+        return False
+    shared = first_words.intersection(second_words)
+    if len(shared) >= 3 and len(shared) / min(len(first_words), len(second_words)) >= 0.4:
+        return True
+    union = first_words.union(second_words)
+    return len(shared) >= 5 and len(shared) / len(union) >= 0.68
+
+
+def remove_redundant_sentences(sentences, reference_sentences):
+    unique = []
+    for sentence in sentences:
+        if any(
+            social_sentences_are_redundant(sentence, reference)
+            for reference in [*reference_sentences, *unique]
+        ):
+            continue
+        unique.append(sentence)
+    return unique
+
+
 def ensure_three_sentence_summary(summary, source_excerpt, highlights, why_it_matters):
     sentences = []
-    seen = set()
     for candidate in (summary, source_excerpt, *highlights, why_it_matters):
-        for sentence in social_sentences(clean_editorial_text(candidate)):
-            normalized = re.sub(r"\W+", " ", sentence.casefold()).strip()
-            if normalized and normalized not in seen:
-                sentences.append(sentence)
-                seen.add(normalized)
-            if len(sentences) == 5:
-                break
-        if len(sentences) == 5:
+        candidate_sentences = social_sentences(clean_editorial_text(candidate))
+        sentences.extend(remove_redundant_sentences(candidate_sentences, sentences))
+        if len(sentences) >= 3:
             break
     fallbacks = (
         "The available feed excerpt does not include further confirmed details.",
@@ -531,7 +558,7 @@ def ensure_three_sentence_summary(summary, source_excerpt, highlights, why_it_ma
         if len(sentences) >= 3:
             break
         sentences.append(fallback)
-    return "\n\n".join(sentences[:5])
+    return "\n\n".join(sentences[:3])
 
 
 def relevant_hashtags(context, platform):
@@ -565,31 +592,27 @@ def relevant_hashtags(context, platform):
 
 def create_social_post(platform, title, post, summary, highlights, why_it_matters, context, url):
     sentences = []
-    seen = set()
 
     def add_sentences(value):
         for sentence in social_sentences(remove_repeated_headline(title, clean_editorial_text(value))):
-            normalized = re.sub(r"\W+", " ", sentence.casefold()).strip()
-            if normalized and normalized not in seen:
+            if sentence and not any(
+                social_sentences_are_redundant(sentence, existing)
+                for existing in sentences
+            ):
                 sentences.append(sentence)
-                seen.add(normalized)
+                if len(sentences) == 5:
+                    return
 
     add_sentences(post)
-    add_sentences(summary)
-    for point in highlights:
-        add_sentences(point)
-    add_sentences(why_it_matters)
-    add_sentences(context)
-
-    impact = everyday_impact_label(f"{title} {summary} {context}")
-    if len(sentences) < 3 and impact:
-        add_sentences(
-            f"This makes the report relevant to people who use {impact.split(' (', 1)[0]}."
-        )
     if len(sentences) < 3:
-        add_sentences("The update is relevant to readers following security developments.")
+        add_sentences(summary)
     if len(sentences) < 3:
-        add_sentences("Check the linked report for the full context and any response guidance.")
+        for point in highlights:
+            add_sentences(point)
+            if len(sentences) >= 3:
+                break
+    if len(sentences) < 3:
+        add_sentences(why_it_matters)
 
     copy = "\n\n".join(sentences[:5])
     copy = add_linkedin_emoji(copy, f"{title} {summary} {context}")
@@ -807,20 +830,27 @@ def summarize_stories(stories):
                 ][:4]
                 if isinstance(raw_highlights, list) else []
             )
-            normalized_summary = " ".join(summary.casefold().split())
-            highlights = [
-                point for point in highlights
-                if " ".join(point.casefold().split()) != normalized_summary
-            ]
             why_it_matters = clean_editorial_text(item.get("why_it_matters"))
-            summary = ensure_three_sentence_summary(
-                summary, original.excerpt, highlights, why_it_matters
-            )
             if (
                 "review the original report" in why_it_matters.casefold()
                 and "recommended actions" in why_it_matters.casefold()
             ):
                 why_it_matters = ""
+            summary_sentences = social_sentences(summary)
+            highlights = remove_redundant_sentences(highlights, summary_sentences)
+            if any(
+                social_sentences_are_redundant(why_sentence, summary_sentence)
+                for why_sentence in social_sentences(why_it_matters)
+                for summary_sentence in summary_sentences
+            ) or any(
+                social_sentences_are_redundant(why_sentence, highlight)
+                for why_sentence in social_sentences(why_it_matters)
+                for highlight in highlights
+            ):
+                why_it_matters = ""
+            summary = ensure_three_sentence_summary(
+                summary, original.excerpt, highlights, why_it_matters
+            )
             linkedin_post = remove_repeated_headline(
                 original.title,
                 clean_editorial_text(item.get("linkedin_post")),
