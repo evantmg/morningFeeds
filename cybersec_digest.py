@@ -463,6 +463,20 @@ def filter_previously_sent(stories, history):
     return fresh
 
 
+def stories_for_digest(stories, history):
+    fresh_stories = filter_previously_sent(stories, history)
+    if fresh_stories:
+        return fresh_stories, True
+    if stories:
+        logging.warning(
+            "All %d current stories were sent recently; repeating current-window "
+            "stories rather than sending an empty briefing",
+            len(stories),
+        )
+        return stories, False
+    return [], False
+
+
 def save_story_history(stories, history, path=HISTORY_FILE, now=None):
     now = now or datetime.now(timezone.utc)
     sent_at = now.isoformat()
@@ -1212,12 +1226,18 @@ def main():
     stories = collect_stories(now)
     logging.info("Collected %d relevant stories", len(stories))
     history = load_story_history(now=now)
-    stories = filter_previously_sent(stories, history)
+    stories, record_sent_stories = stories_for_digest(stories, history)
     logging.info("%d stories remain after sent-story deduplication", len(stories))
     digest = summarize_stories(stories)
+    if stories and not record_sent_stories:
+        digest["topline"] = (
+            "No new unseen reports were found. These recent stories are repeated because "
+            "they remain within the 48-hour monitoring window."
+        )
     subject, text_body, html_body = build_email(digest, now)
     send_email(subject, text_body, html_body)
-    save_story_history(digest["stories"], history, now=now)
+    if record_sent_stories:
+        save_story_history(digest["stories"], history, now=now)
     return 0
 
 

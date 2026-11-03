@@ -22,6 +22,7 @@ from cybersec_digest import (
     remove_repeated_headline,
     remove_redundant_sentences,
     summarize_stories,
+    stories_for_digest,
 )
 
 
@@ -328,6 +329,59 @@ class DigestRegressionTests(unittest.TestCase):
             text_body.index("[HIGH] | CVSS 8.9"),
             text_body.index("[HIGH] | CVSS 7.4"),
         )
+
+    def test_digest_repeats_current_stories_only_when_history_filters_everything(self):
+        story = Story(
+            title="A current security incident",
+            url="https://example.com/current-incident",
+            source="Example",
+            published="2026-11-02T00:00:00+00:00",
+            excerpt="A current incident affects customers.",
+            score=1,
+            topics=["Cybercrime & Incident Response"],
+        )
+        history = [{
+            "url": story.url,
+            "title": story.title,
+            "summary": "",
+            "sent_at": "2026-11-02T00:00:00+00:00",
+        }]
+
+        selected, should_record = stories_for_digest([story], history)
+
+        self.assertEqual(selected, [story])
+        self.assertFalse(should_record)
+
+    def test_digest_uses_only_unseen_stories_when_available(self):
+        seen_story = Story(
+            title="Previously sent incident",
+            url="https://example.com/seen",
+            source="Example",
+            published="2026-11-02T00:00:00+00:00",
+            excerpt="A current incident affects customers.",
+            score=1,
+            topics=["Cybercrime & Incident Response"],
+        )
+        new_story = Story(
+            title="New security incident",
+            url="https://example.com/new",
+            source="Example",
+            published="2026-11-02T00:00:00+00:00",
+            excerpt="A new incident affects customers.",
+            score=2,
+            topics=["Cybercrime & Incident Response"],
+        )
+        history = [{
+            "url": seen_story.url,
+            "title": seen_story.title,
+            "summary": "",
+            "sent_at": "2026-11-02T00:00:00+00:00",
+        }]
+
+        selected, should_record = stories_for_digest([seen_story, new_story], history)
+
+        self.assertEqual(selected, [new_story])
+        self.assertTrue(should_record)
 
     def test_short_generated_posts_fall_back_without_repeating_headline(self):
         story = Story(
